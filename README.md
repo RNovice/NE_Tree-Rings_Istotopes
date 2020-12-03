@@ -1,3 +1,2 @@
-# NE_Tree-Rings_Istotopes
-Analyses of iWUE, ci and climate trends in NE hemlock Forests. The analysis comprise 2 scripts: one for climate data and one for tree ring isotopes. 
-It Reads raw 13 C data from 11 sites and calculate iWUE, runs statistical analyses of trends, break points and correlations with climate. It also calculates photosynthesis (Farquhar Model) and ci/ca (using the p-model).
+# NE-USA_Tree-Rings_Isotopes
+Analyses of iWUE, ci and climate trends in NE hemlock Forests.
