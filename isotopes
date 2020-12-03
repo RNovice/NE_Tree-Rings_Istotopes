@@ -1,1 +1,1330 @@
 
+## WUE Data & Analyses
+## AUTHORS:Soumaya Belmecheri1, 
+# 1 University of Arizona, Laboratory of Tree Ring Research, Tucson, Arizona 85721, USA.
+
+
+rm(list=ls())
+## Packages Needed for the analyses
+library(trend)
+library(dplR)                   #Tree ring analysis in R
+library(treeclim)               #For comparing tree rings to climate
+library(RColorBrewer)    
+library(lattice)
+library(zoo)
+library(pspline)
+library(trend)                  #For regime shift 
+library(fields)
+library(Hmisc)
+library(mapdata)
+library(fields)
+library(rpmodel)                #For OPTIMALITY MODELLING (x)
+library(changepoint)            #For regime shift analyses
+library(SciViews)
+library(tfplot)
+library(Metrics)
+library (dplyr)
+#working directory
+setwd("~/Documents/GCB_PAPER_NE13C/")
+# ISOTOPE & WUE CALCULATION -----------------------------------------------
+
+## Calculate WUE and CI, D, etc
+
+# read input file for all data (CO2 and 13C for long-time series)
+
+# Data from CMIP6/ Graven et al 2017
+CMIP6 <- read.csv("~/Documents/GCB_PAPER_NE13C/ATM_GHG/TableS1_170710_submitted.csv", header=T)
+C13_atm <- ts(CMIP6$Global.delta13co2, start=1850, frequency = 1)
+atm_13C <- window(C13_atm, start=1901, end=2012)# subsetting the data for the time window of obs [1901:2012]
+
+# CO2 concentration data from SCRIPPS, spline ice core and merged obs downlanded June 5 2017
+CO2_atm <- read.csv("~/Documents/GCB_PAPER_NE13C/ATM_GHG/spline_merged_ice_core_yearly_SB.csv", header=T)
+atmy <- CO2_atm$Year
+atm <- CO2_atm$CO2[atmy>=1901]
+atm_C <- ts(atm[1:112], start=1901, frequency = 1)# subsetting the data for the time window of obs
+
+## isotopic data (own measurement, QC)
+data_TR_long <- read.csv("treering13CRAW.csv", header=T) #time series of tree-rings 13C
+## isotopic data (own measurement, QC)- Exclude red oak
+data_TR_long_tsca <- data_TR_long[,-3]
+
+
+leaf <- 2.1 # offset between leaf and stem
+# btv <- 0.8 # between tree variability based on idividual tree measurements
+uncert <- 1.5 #uncertainty
+
+
+d13_plant <- data_TR_long_tsca[,2:4]-leaf
+d13_plant <- ts(start = 1901,end = 2012, data =d13_plant)
+d13_atm <-  atm_13C # these are values from the WUE sensitivity script/ CMIP6
+ca <- atm_C # these are values from the WUE sensitivity script/ CMIP6
+
+## PLOT INPUT FOR VERIFICATION
+plot.ts(d13_plant)
+plot.ts(d13_atm)
+plot.ts(ca)
+
+source("Photoresp_factor_functions.R")
+#FRACTIONATION FACTORS
+a=4.4
+b=28
+elev <- c(342,303,60)
+n=length(elev)
+temp_NE <-read.csv("NE_temp.csv", header=T)
+temp_NE_JJA <-ts(temp_NE[,1:3],start= c(1901,1))
+temp_NE_AMJAS <-ts(temp_NE[,4:6],start= c(1901,1))
+# WUE FUNCTION
+WUE <- function(ca=ca, d13_plant= d13_plant ,d13_atm= d13_atm,a=a,b=b, elev=elev, temp=temp_NE_JJA)
+{
+source("Photoresp_factor_functions.R")  
+  
+  patm.r <- calc_patm(elv = elev)
+  patm.r[is.na(patm.r)] <- mean(patm.r, na.rm = T)
+  
+  Pca <- matrix(NA, nrow =  112,ncol = n, byrow = F)
+  ca.1 <- matrix(NA, nrow =  112,ncol = n, byrow = F)
+  for(s in 1:n){
+    Pca[,s] <- co2_to_ca(ca, patm.r[s] )
+    ca.1[,s] <- ca
+  }
+  Pca.ts <- ts(Pca,start= c(1901,1))
+  ca.ts <- ts(ca.1,start= c(1901,1))
+  
+  Gst <- CO2.compens.point(tc =temp_NE_JJA , patm = patm.r)
+  
+  photoresp_term <- 12*(Gst/Pca.ts)
+  
+  #Discrimination Farquhar 1982
+  big_delta= (d13_atm-d13_plant)/(1+d13_plant/1000) 
+  ciOca=(big_delta-a)/(b-a)
+  ci= ca*ciOca
+  caMci=ca-ci
+  I_WUE <- (ca-ci)/1.6
+  
+  #Discrimination Farquhar 1982 including photorespiration
+  
+  ciOca_Gstar=(big_delta-a+photoresp_term)/(b-a)
+  ci_Gstar= ca*ciOca_Gstar
+  caMci_Gstar=ca-ci_Gstar
+  I_WUE_Gstar <- (ca-ci_Gstar)/1.6
+  
+  
+  result <- list(iwue=I_WUE,
+                 ci=ci, 
+                 big_delta=big_delta, 
+                 d13C_plant =d13_plant,
+                 cirt=ciOca,
+                 cidiff= caMci,
+                 ciOca_foto=ciOca_Gstar,
+                 ci_foto=ci_Gstar,
+                 WUE_foto=I_WUE_Gstar)
+  
+  return(result)
+}
+
+
+e <- WUE(ca, d13_plant, d13_atm,a,b,elev=elev, temp=temp_NE_JJA)
+
+plus_unser=d13_plant+uncert
+minus_uncer=d13_plant-uncert
+
+eUplus <- WUE(ca, d13_plant = plus_unser , d13_atm,a,b, elev=elev,temp=temp_NE_JJA)
+eUmin <- WUE(ca, d13_plant = minus_uncer , d13_atm,a,b, elev=elev,temp=temp_NE_JJA)
+
+
+#DECLARE VARIABLES FROM E OUTPUT
+bigD =e$big_delta; colnames(bigD) <- colnames(d13_plant)
+ci =e$ci ; colnames(ci) <- colnames(d13_plant)
+wue =e$iwue; colnames(wue) <- colnames(d13_plant)
+rt_ci=e$cirt; colnames(rt_ci) <- colnames(d13_plant)
+diff_ci=e$cidiff; colnames(diff_ci) <- colnames(d13_plant)
+
+cimin=eUplus$ci; colnames(cimin) <- colnames(d13_plant) 
+ciplus=eUmin$ci; colnames(ciplus) <- colnames(d13_plant)
+wuemin=eUmin$iwue; colnames(wuemin) <- colnames(d13_plant)
+wueplus=eUplus$iwue; colnames(wuemin) <- colnames(d13_plant)
+
+#INCLUDING Photorespiration: using p for photorespiration
+ci_p =e$ci_foto ; colnames(ci_p) <- colnames(d13_plant)
+wue_p =e$WUE_foto; colnames(wue_p) <- colnames(d13_plant)
+rt_ci_p=e$ciOca_foto; colnames(rt_ci_p) <- colnames(d13_plant)
+
+cimin_p=eUplus$ci_foto; colnames(cimin_p) <- colnames(d13_plant) # note that this is inverted because of the sign when doing uncertainty
+ciplus_p=eUmin$ci_foto; colnames(ciplus_p) <- colnames(d13_plant)# note that this is inverted because of the sign when doing uncertainty
+wuemin_p=eUmin$WUE_foto; colnames(wuemin_p) <- colnames(d13_plant)
+wueplus_p=eUplus$WUE_foto; colnames(wuemin_p) <- colnames(d13_plant)
+
+
+# CI ANALYSIS -------------------------------------------------------------
+#mean of ci across sites only for hemlock species [excluding quercus for this analysis]
+
+NEci_hemlock <- ts(start=1901, frequency=1,data=rowMeans(ci, na.rm = TRUE))
+NEci_hemlock_up <- ts(start=1901, frequency=1,data=rowMeans(ciplus, na.rm = TRUE))
+NEci_hemlock_low <- ts(start=1901, frequency=1,data=rowMeans(cimin, na.rm = TRUE))
+
+NEci_hemlock_p <- ts(start=1901, frequency=1,data=rowMeans(ci_p, na.rm = TRUE))
+NEci_hemlock_up_p <- ts(start=1901, frequency=1,data=rowMeans(ciplus_p, na.rm = TRUE))
+NEci_hemlock_low_p <- ts(start=1901, frequency=1,data=rowMeans(cimin_p, na.rm = TRUE))
+
+
+
+# zscore of each time serie ci for each site
+z1 <- scale(ci[,1] ,center = TRUE, scale = TRUE)
+z2 <- scale(ci[,2] ,center = TRUE, scale = TRUE)
+z3 <- scale(ci[,3] ,center = TRUE, scale = TRUE)
+
+
+# break point of ci
+Break_NE_hemlock <- pettitt.test(NEci_hemlock)
+Break_NE_hemlock_p <- pettitt.test(NEci_hemlock_p)
+
+
+# Trends of ci after shift
+ 
+NEhemlock_CI_P75 <- NEci_hemlock[time(NEci_hemlock) > 1975]
+sens.slope(ts(NEhemlock_CI_P75), conf.level=0.95)
+
+NEhemlock_CI_P75_p <- NEci_hemlock_p[time(NEci_hemlock_p) > 1975]
+sens.slope(ts(NEhemlock_CI_P75_p), conf.level=0.95)
+
+
+# WUE ANALYSIS ------------------------------------------------------------
+
+# WUE original (co2+climate) across all sites.
+I_WUE_hemlock <- ts(start=1901, frequency=1,data=rowMeans(wue, na.rm = TRUE))
+I_WUE_hemlock_up <- ts(start=1901, frequency=1,data=rowMeans(wueplus, na.rm = TRUE))
+I_WUE_hemlock_low <- ts(start=1901, frequency=1,data=rowMeans(wuemin, na.rm = TRUE))
+
+# calculating % change of iWUE w.r.t. to 1901-1910
+ref_hemlock <- mean(window(I_WUE_hemlock, start=1901, end=1910)) #average of first decade
+IWUE_hemlock_1910 <- ts(NA, start = 1901, end=2012,frequency=1)
+for (p in 1:length(I_WUE_hemlock)){IWUE_hemlock_1910[p]=((I_WUE_hemlock[p]-ref_hemlock)/ref_hemlock)*100}
+
+#calculating %  change in IWUE of hemlock for upper and lower bounds
+ref_hemlock_up <- mean(window(I_WUE_hemlock_up, start=1901, end=1910)) 
+IWUE_hemlock_1910_up <- ts(NA, start = 1901, end=2012,frequency=1)
+for (p in 1:length(I_WUE_hemlock_up)){IWUE_hemlock_1910_up[p]=((I_WUE_hemlock_up[p]-ref_hemlock_up)/ref_hemlock_up)*100}
+
+ref_hemlock_low <- mean(window(I_WUE_hemlock_low, start=1901, end=1910)) 
+IWUE_hemlock_1910_low <- ts(NA, start = 1901, end=2012,frequency=1)
+for (p in 1:length(I_WUE_hemlock_low)){IWUE_hemlock_1910_low[p]=((I_WUE_hemlock_low[p]-ref_hemlock_low)/ref_hemlock_low)*100}
+#@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+# WUE original including photorespiration (co2+climate) across all sites.
+I_WUE_hemlock_p <- ts(start=1901, frequency=1,data=rowMeans(wue_p, na.rm = TRUE))
+I_WUE_hemlock_up_p <- ts(start=1901, frequency=1,data=rowMeans(wueplus_p, na.rm = TRUE))
+I_WUE_hemlock_low_p <- ts(start=1901, frequency=1,data=rowMeans(wuemin_p, na.rm = TRUE))
+
+# calculating % change of iWUE w.r.t. to 1901-1910
+ref_hemlock_p <- mean(window(I_WUE_hemlock_p, start=1901, end=1910)) #average of first decade
+IWUE_hemlock_1910_p <- ts(NA, start = 1901, end=2012,frequency=1)
+for (p in 1:length(I_WUE_hemlock_p)){IWUE_hemlock_1910_p[p]=((I_WUE_hemlock_p[p]-ref_hemlock_p)/ref_hemlock_p)*100}
+
+#calculating %  change in IWUE of hemlock for upper and lower bounds
+ref_hemlock_up_p <- mean(window(I_WUE_hemlock_up_p, start=1901, end=1910)) 
+IWUE_hemlock_1910_up_p <- ts(NA, start = 1901, end=2012,frequency=1)
+for (p in 1:length(I_WUE_hemlock_up_p)){IWUE_hemlock_1910_up_p[p]=((I_WUE_hemlock_up_p[p]-ref_hemlock_up_p)/ref_hemlock_up_p)*100}
+
+ref_hemlock_low_p <- mean(window(I_WUE_hemlock_low_p, start=1901, end=1910)) 
+IWUE_hemlock_1910_low_p <- ts(NA, start = 1901, end=2012,frequency=1)
+for (p in 1:length(I_WUE_hemlock_low_p)){IWUE_hemlock_1910_low_p[p]=((I_WUE_hemlock_low_p[p]-ref_hemlock_low_p)/ref_hemlock_low_p)*100}
+
+## Evaluate the Trend in WUE of hemlock
+window1 <- c(1901:1956)
+window2 <- c(1957:1975)
+window3 <- c(1976:2012)
+
+
+hemlock_w1 <- window(I_WUE_hemlock, start=1901, end=1956)
+hemlock_w2 <- window(I_WUE_hemlock, start=1957, end=1975)
+hemlock_w3 <- window(I_WUE_hemlock, start=1976, end=2012)
+
+hemlock_w1_percent <- window(IWUE_hemlock_1910, start=1901, end=1956)
+hemlock_w2_percent <- window(IWUE_hemlock_1910, start=1957, end=1975)
+hemlock_w3_percent <- window(IWUE_hemlock_1910, start=1976, end=2012)
+
+
+## LINEAR REGRESSION FOR EACH PERIOD
+reg1 <- summary(lm(hemlock_w1~window1))
+reg2 <- summary(lm(hemlock_w2~window2))
+reg3 <- summary(lm(hemlock_w3~window3))
+
+reg1_percent <- summary(lm(hemlock_w1_percent~window1))
+reg2_percent <- summary(lm(hemlock_w2_percent~window2))
+reg3_percent <- summary(lm(hemlock_w3_percent~window3))
+
+
+## EVALUATE THE SEN SLOPES
+s1 <- sens.slope(hemlock_w1_percent, conf.level = 0.95)
+s2 <- sens.slope(hemlock_w2_percent, conf.level = 0.95)
+s3 <- sens.slope(hemlock_w3_percent, conf.level = 0.95)
+
+## Make a table with output
+cbind(s1$estimates,s1$conf.int,s1$b.sen.lo,s2$b.sen,s2$b.sen.up,s2$b.sen.lo,s3$b.sen,s3$b.sen.up,s3$b.sen.lo)
+cbind(reg1_percent$coefficients[[2]],reg2_percent$coefficients[[2]],reg3_percent$coefficients[[2]])
+
+###### RERUN THE ANALYSES ABOVE FOR WUE INCLUDING PHOTORESPIRATION
+
+iwue.percent_p <- IWUE_hemlock_1910_p
+iwue_out_p=cpt.meanvar(iwue.percent_p,penalty="SIC",pen.value=0,method="BinSeg",Q=5,test.stat="Normal",class=TRUE,param.estimates=TRUE,shape=1,minseglen=10)
+pen.value.full(iwue.percent_p) # gives associated penalty transition points
+cpts.full(iwue_out_p)
+plot(iwue_out_p,diagnostic=TRUE)#help you to detect which changpoint is significant
+plot(iwue_out_p,ncpts=2)# plot the series and the mean
+
+## POINTS YIELDED ARE 1956 and 1976 for the significant ones
+## HERE, I RAN  ALSO CHANGE POINTS USING PETTITT TEST FOR CONFIRMATION.
+pettitt.test(I_WUE_hemlock_p)
+# first test in 1956 with  a p-value < 2.2e-16
+pettitt.test(window(I_WUE_hemlock_p, start=1957, end=2012))
+# second  test in 1976 with  a p-value <   1.546e-05
+
+## Evaluate the Trend in WUE of hemlock
+window1 <- c(1901:1955)
+window2 <- c(1956:1975)
+window3 <- c(1976:2012)
+
+
+hemlock_w1_p <- window(I_WUE_hemlock_p, start=1901, end=1955)
+hemlock_w2_p <- window(I_WUE_hemlock_p, start=1956, end=1975)
+hemlock_w3_p <- window(I_WUE_hemlock_p, start=1976, end=2012)
+
+hemlock_w1_percent_2 <- window(IWUE_hemlock_1910_p, start=1901, end=1955)
+hemlock_w2_percent_2 <- window(IWUE_hemlock_1910_p, start=1956, end=1975)
+hemlock_w3_percent_2 <- window(IWUE_hemlock_1910_p, start=1976, end=2012)
+
+
+## LINEAR REGRESSION FOR EACH PERIOD
+reg1_p <- summary(lm(hemlock_w1_p~window1))
+reg2_p <- summary(lm(hemlock_w2_p~window2))
+reg3_p <- summary(lm(hemlock_w3_p~window3))
+
+reg1_percent_2 <- summary(lm(hemlock_w1_percent_2~window1))
+reg2_percent_2 <- summary(lm(hemlock_w2_percent_2~window2))
+reg3_percent_2 <- summary(lm(hemlock_w3_percent_2~window3))
+
+
+## EVALUATE THE SEN SLOPES
+s1_p <- sens.slope(hemlock_w1_percent_2, conf.level  = 0.95)
+s2_p <- sens.slope(hemlock_w2_percent_2, conf.level = 0.95)
+s3_p <- sens.slope(hemlock_w3_percent_2, conf.level = 0.95)
+
+## Make a table with output
+cbind(s1_p$estimates,s1_p$conf.int,s2_p$estimates,s2_p$conf.int,s3_p$estimates,s3_p$conf.int)
+cbind(reg1_percent_2$coefficients[[2]],reg2_percent_2$coefficients[[2]],reg3_percent_2$coefficients[[2]])
+
+
+# PHYSIOLOGICAL PARAMETERS [Big D 1901-2012] ------------------------------------------------
+
+#TRENDS IN BIG D
+D_3H <- ts(start=1901, frequency=1,data=rowMeans(bigD,na.rm = T))
+D_3H_P75 <- D_3H[time(D_3H)>1975]
+sens.slope(ts(D_3H_P75), conf.level = 0.95)
+
+#TRENDS IN BIG D after 1975
+ca_P75 <- atm_C[time(atm_C)>1975]
+trend_D <- summary(lm(D_3H_P75~ca_P75 ))
+#ci/ca for hemlocks
+rt_3H <- rt_ci #ci/ca for hemlocks
+rt_3H_mean <- ts(data=rowMeans(rt_3H, na.rm = TRUE), start=1901, frequency=1)
+
+#ci/ca for hemlocks with photorespiration
+rt_3H_p <- rt_ci_p #ci/ca for hemlocks
+rt_3H_mean_p <- ts(data=rowMeans(rt_3H_p, na.rm = TRUE), start=1901, frequency=1)
+
+
+# trends of ci/ca based on break points identified for IWUE
+
+sens.slope(rt_3H_mean, conf.level = 0.95)
+sens.slope(rt_3H_mean_p, conf.level = 0.95)
+
+
+plot(rt_3H_mean, ylim=c(0.5,0.7))
+lines(ts(ffcsaps(as.vector(rt_3H_mean ),nyrs = 30),start = 1901, end = 2012, frequency = 1))
+
+plot(rt_3H_mean_p, ylim=c(0.5,0.7))
+lines(ts(ffcsaps(as.vector(rt_3H_mean_p),nyrs = 30),start = 1901, end = 2012, frequency = 1))
+
+
+
+# slopes for ci/ca of periods corresponding to breakpoints.
+rt1 <- sens.slope(window(rt_3H_mean , start=1901, end=1956), conf.level=0.95)
+rt2 <- sens.slope(window(rt_3H_mean , start=1957, end=1975), conf.level=0.95)
+rt3 <- sens.slope(window(rt_3H_mean , start=1976, end=2012), conf.level=0.95)
+
+# slopes for ci/ca with Photorespiration of periods corresponding to breakpoints.
+rt1_p <- sens.slope(window(rt_3H_mean_p , start=1901, end=1956), conf.level=0.95)
+rt2_p <- sens.slope(window(rt_3H_mean_p , start=1957, end=1975), conf.level=0.95)
+rt3_p <- sens.slope(window(rt_3H_mean_p , start=1976, end=2012), conf.level=0.95)
+
+
+# 1992-2012 ANALYSIS [CI & WUE] ------------------------------------------------------
+
+# input data of recent years for 13C from tree rings
+sites <- read.csv("TR_1992_2012.csv", header=T)
+ts_sites <- ts(start=1992, frequency = 1, data=sites[,-1])
+
+# input data of atmopheric GHG, for recent period
+R_d13_atm <-  atm_13C[92:112]
+R_ca <- atm_C[92:112]
+
+# Sclae up from trees to leaf
+R_d13_plant <- ts_sites-leaf
+
+# Add Elevation and temperature for new function with foto
+
+R_elev <- c(295,425,272,135,380,230,115,85,60,303,342)
+R_n=length(R_elev)
+
+#Declare climate variables 
+# R_NE_PCP
+# R_NE_TEMP
+# R_NE_VPD
+
+R_Temp <- ts(R_NE_TEMP, c(1992,1))
+
+WUE_R <- function(ca=R_ca, d13_plant= R_d13_plant ,d13_atm= R_d13_atm,a=a,b=b, elev=R_elev, temp=R_Temp)
+{
+  source("Photoresp_factor_functions.R")  
+  
+  patm.r_R <- calc_patm(elv = R_elev)
+  patm.r_R[is.na(patm.r_R)] <- mean(patm.r_R, na.rm = T)
+  
+  Pca_R <- matrix(NA, nrow =  21,ncol = R_n, byrow = F)
+  ca.1_R <- matrix(NA, nrow =  21,ncol = R_n, byrow = F)
+  for(s in 1:R_n){
+    Pca_R[,s] <- co2_to_ca(R_ca, patm.r_R[s] )
+    ca.1_R[,s] <- R_ca
+  }
+  Pca_R.ts <- ts(Pca_R,start= c(1992,1))
+  ca_R.ts <- ts(ca.1_R,start= c(1992,1))
+  
+  Gst_R <- CO2.compens.point(tc =R_Temp, patm = patm.r_R)
+  
+  photoresp_term_R <- 12*(Gst_R/Pca_R.ts)
+  
+  #Discrimination Farquhar 1982
+  big_delta= (d13_atm-d13_plant)/(1+d13_plant/1000) 
+  ciOca=(big_delta-a)/(b-a)
+  ci= ca*ciOca
+  caMci=ca-ci
+  I_WUE <- (ca-ci)/1.6
+  
+  #Discrimination Farquhar 1982 including photorespiration
+  
+  ciOca_Gstar=(big_delta-a+photoresp_term_R)/(b-a)
+  ci_Gstar= ca*ciOca_Gstar
+  caMci_Gstar=ca-ci_Gstar
+  I_WUE_Gstar <- (ca-ci_Gstar)/1.6
+  
+  
+  result <- list(iwue=I_WUE,
+                 ci=ci, 
+                 big_delta=big_delta, 
+                 d13C_plant =d13_plant,
+                 cirt=ciOca,
+                 cidiff= caMci,
+                 ciOca_foto=ciOca_Gstar,
+                 ci_foto=ci_Gstar,
+                 WUE_foto=I_WUE_Gstar)
+  
+  return(result)
+}
+
+
+R_d13_plant_plus=R_d13_plant+uncert
+R_d13_plant_minus=R_d13_plant-uncert
+# run function for recent period
+R_e <- WUE_R(ca=R_ca, d13_plant= R_d13_plant ,d13_atm= R_d13_atm,a=a,b=b, elev=R_elev, temp=R_Temp)
+R_eUplus <- WUE_R(ca=R_ca, d13_plant= R_d13_plant_plus ,d13_atm= R_d13_atm,a=a,b=b, elev=R_elev, temp=R_Temp)
+R_eUmin <- WUE_R(ca=R_ca, d13_plant= R_d13_plant_minus ,d13_atm= R_d13_atm,a=a,b=b, elev=R_elev, temp=R_Temp)
+
+
+
+#wue function output 
+R_bigD =R_e$big_delta; colnames(R_bigD) <- colnames(R_d13_plant)
+R_ci =R_e$ci ; colnames(R_ci) <- colnames(R_d13_plant)
+R_wue =R_e$iwue; colnames(R_wue) <- colnames(R_d13_plant)
+R_rt_ci=R_e$cirt; colnames(R_rt_ci) <- colnames(R_d13_plant)
+R_diff_ci=R_e$cidiff; colnames(R_diff_ci) <- colnames(R_d13_plant)
+
+R_ci_up =R_eUplus[[2]] ; colnames(R_ci_up) <- colnames(R_d13_plant)
+R_ci_low =R_eUmin[[2]] ; colnames(R_ci_low) <- colnames(R_d13_plant)
+R_wue_up =R_eUplus[[1]] ; colnames(R_wue_up) <- colnames(R_d13_plant)
+R_wue_low =R_eUmin[[1]] ; colnames(R_wue_low) <- colnames(R_d13_plant)
+
+
+#With photorespiration
+
+
+R_ci_foto =R_e$ci_foto ; colnames(R_ci_foto) <- colnames(R_d13_plant)
+R_wue_foto =R_e$WUE_foto; colnames(R_wue_foto) <- colnames(R_d13_plant)
+R_rt_ci_foto=R_e$ciOca_foto; colnames(R_rt_ci_foto) <- colnames(R_d13_plant)
+
+# Trends of ci, wue and rt_ci for the 8 sites
+R_rt_8 <- ts(rowMeans(R_rt_ci[,-c(9:11)], na.rm = TRUE),start=1992)
+R_rt_11 <- ts(rowMeans(R_rt_ci, na.rm = TRUE),start=1992)
+R_ci_8 <- ts(rowMeans(R_ci[,-c(9:11)], na.rm = TRUE), start=1992)
+R_WUE_8 <- ts(rowMeans(R_wue[,-c(9:11)], na.rm = TRUE), start=1992)
+R_WUE_11 <- ts(rowMeans(R_wue, na.rm = TRUE), start=1992)
+R_ci_11 <- ts(rowMeans(R_ci, na.rm = TRUE), start=1992)
+
+# Trends of ci, wue and rt_ci for the 8 sites with foto
+R_rt_8_foto <- ts(rowMeans(R_rt_ci_foto[,-c(9:11)], na.rm = TRUE),start=1992)
+R_rt_11_foto <- ts(rowMeans(R_rt_ci_foto, na.rm = TRUE),start=1992)
+
+R_ci_8_foto <- ts(rowMeans(R_ci_foto[,-c(9:11)], na.rm = TRUE), start=1992)
+R_WUE_8_foto <- ts(rowMeans(R_wue_foto[,-c(9:11)], na.rm = TRUE), start=1992)
+R_WUE_11_foto <- ts(rowMeans(R_wue_foto, na.rm = TRUE), start=1992)
+R_ci_11_foto <- ts(rowMeans(R_ci_foto, na.rm = TRUE), start=1992)
+
+
+# TRENDS OF CI FOR EACH SITE
+R_sen <- c()
+R_sen_up <- c()
+R_sen_lo <- c()
+
+for (i in 1:11){R_sen[i]=sens.slope(na.omit(R_ci[,i]), conf.level=0.95)$estimates}
+for (i in 1:11){R_sen_up[i]=sens.slope(na.omit(R_ci[,i]), conf.level=0.95)$conf.int[2]}
+for (i in 1:11){R_sen_lo[i]=sens.slope(na.omit(R_ci[,i]), conf.level=0.95)$conf.int[1]}
+
+#Table of slopes for ci
+R_slopes <- rbind(R_sen,R_sen_lo,R_sen_up)
+colnames(R_slopes) <- colnames(R_d13_plant)
+R_slopes <- t(R_slopes)
+
+# TRENDS OF CI FOR EACH SITE WITH FOTO
+R_sen_foto <- c()
+R_sen_up_foto <- c()
+R_sen_lo_foto <- c()
+
+for (i in 1:11){R_sen_foto[i]=sens.slope(na.omit(R_ci_foto[,i]), conf.level=0.95)$estimates}
+for (i in 1:11){R_sen_lo_foto[i]=sens.slope(na.omit(R_ci_foto[,i]), conf.level=0.95)$conf.int[1]}
+for (i in 1:11){R_sen_up_foto[i]=sens.slope(na.omit(R_ci_foto[,i]), conf.level=0.95)$conf.int[2]}
+
+
+#Table of slopes for ci WITH FOTO
+R_slopes_foto <- rbind(R_sen_foto,R_sen_lo_foto,R_sen_up_foto)
+colnames(R_slopes_foto) <- colnames(R_d13_plant)
+R_slopes_foto <- t(R_slopes_foto)
+
+# TRENDS OF WUE FOR EACH SITE
+R_w <- c()
+R_w_up <- c()
+R_w_lo <- c()
+
+for (i in 1:11){R_w[i]=sens.slope(na.omit(R_wue[,i]), conf.level=0.95)$estimates}
+for (i in 1:11){R_w_up[i]=sens.slope(na.omit(R_wue[,i]), conf.level=0.95)$conf.int[2]}
+for (i in 1:11){R_w_lo[i]=sens.slope(na.omit(R_wue[,i]), conf.level=0.95)$conf.int[1]}
+
+#Table of slopes for wue
+R_w_slopes <- rbind(R_w,R_w_lo,R_w_up)
+colnames(R_w_slopes) <- colnames(R_d13_plant)
+R_w_slopes <- t(R_w_slopes)
+
+#Table of slopes for wue
+R_w_slopes <- rbind(R_w,R_w_lo,R_w_up)
+colnames(R_w_slopes) <- colnames(R_d13_plant)
+R_w_slopes <- t(R_w_slopes)
+
+# TRENDS OF WUE FOR EACH SITE WITH FOTO
+R_w_foto <- c()
+R_w_up_foto <- c()
+R_w_lo_foto <- c()
+
+for (i in 1:11){R_w_foto[i]=sens.slope(na.omit(R_wue_foto[,i]), conf.level=0.95)$estimates}
+for (i in 1:11){R_w_up_foto[i]=sens.slope(na.omit(R_wue_foto[,i]), conf.level=0.95)$conf.int[2]}
+for (i in 1:11){R_w_lo_foto[i]=sens.slope(na.omit(R_wue_foto[,i]), conf.level=0.95)$conf.int[1]}
+
+#Table of slopes for wue
+R_w_slopes_foto <- rbind(R_w_foto,R_w_lo_foto,R_w_up_foto)
+colnames(R_w_slopes_foto) <- colnames(R_d13_plant)
+R_w_slopes_foto <- t(R_w_slopes_foto)
+
+
+
+#****************************#****************************#****************************
+## PCA ANALYSES
+#****************************#****************************#****************************
+
+# detrend the matrices for PCA
+
+bdp_res <- as.matrix(c((summary(lm(na.omit(R_ci[,11])~c(1992:2010)))$residuals),NA,NA))
+bdp_res_foto <- as.matrix(c((summary(lm(na.omit(R_ci_foto[,11])~c(1992:2010)))$residuals),NA,NA))
+
+ci_8 <- R_ci[,-9:-11]
+D_R_ci <- matrix(NA, nrow=nrow(R_ci), ncol=8, byrow = F)
+for (p in 1:8){D_R_ci[,p] <- summary(lm(na.omit(ci_8[,p])~c(1992:2012)))$residuals}
+summary(prcomp(D_R_ci))
+
+ci_8_foto <- R_ci_foto[,-9:-11]
+D_R_ci_foto <- matrix(NA, nrow=nrow(R_ci), ncol=8, byrow = F)
+for (p in 1:8){D_R_ci_foto[,p] <- summary(lm(na.omit(ci_8_foto[,p])~c(1992:2012)))$residuals}
+summary(prcomp(D_R_ci_foto))
+
+ci_10 <- R_ci[,-11]
+D_R_ci_10 <- matrix(NA, nrow=nrow(R_ci), ncol=10, byrow = F)
+for (p in 1:10){D_R_ci_10[,p] <- summary(lm(na.omit(ci_10[,p])~c(1992:2012)))$residuals}
+
+ci_10_foto <- R_ci_foto[,-11]
+D_R_ci_10_foto <- matrix(NA, nrow=nrow(R_ci), ncol=10, byrow = F)
+for (p in 1:10){D_R_ci_10_foto[,p] <- summary(lm(na.omit(ci_10_foto[,p])~c(1992:2012)))$residuals}
+
+
+ci_11 <- as.matrix(cbind(D_R_ci_10, bdp_res))
+ci_11_foto <- as.matrix(cbind(D_R_ci_10_foto, bdp_res_foto))
+
+summary(prcomp(na.omit(ci_11)))
+summary(prcomp(na.omit(ci_11_foto)))
+
+PC1_R8_ci_p <- (prcomp(na.omit(D_R_ci_foto)))$x[,1]
+
+#****************************#****************************#****************************
+### Calculate % change in iWUE
+#****************************#****************************#****************************
+mean_percent_wue <- percentChange(R_wue)
+mean_percent_wue_photo <- percentChange(R_wue_foto)
+
+Perc_wue_slopes <- c()
+for (i in 1:11){Perc_wue_slopes [i]=sens.slope(na.omit(mean_percent_wue[,i]), conf.level=0.95)$estimates}
+
+Perc_wue_slopes_photo <- c()
+for (i in 1:11){Perc_wue_slopes_photo [i]=sens.slope(na.omit(mean_percent_wue_photo[,i]), conf.level=0.95)$estimates}
+Perc_wue_slopes_photo_p <- c()
+for (i in 1:11){Perc_wue_slopes_photo_p [i]=sens.slope(na.omit(mean_percent_wue_photo[,i]), conf.level=0.95)$p.value}
+
+
+plot(R_wue [,1], ylim=c(60,110), type="n", axes=F,xlab="", ylab="", xlim=c(1990,2015))
+box()
+for (i in 1:11) points(R_wue[,i], pch=19, col="gray")
+abline(h=0)
+for (i in 1:10)lines(x=c(1992:2012), y=predict(lm(R_wue[,i]~c(1992:2012))), col="gray", lw=1.2)
+lines(x=c(1992:2010), y=predict(lm(na.omit(R_wue[,11])~c(1992:2010))), col="gray", lw=1.2)
+axis(1, at=seq(1990,2015, by=2),las=1 ,labels = T,tck = 0.02,padj = -1, lwd=0.5)
+legend("bottomleft", "(b)", bty = "n", cex=1)
+par(mar=c(4,3,0,0.1), lwd=0.5)
+axis(2, at=seq(60,110, by=10),las=1 ,labels = T,tck = 0.02, lwd=0.5, hadj = 0.5)
+mtext(side= 2, text = "Percent change in iWUE", line = 1.9, cex=0.8)
+mtext(side= 1, text = "Year", line = 1.9, cex=0.8)
+
+
+# BREAK POINT/SLOPE PER SITE [1901-2012] ----------------------------------
+
+# colnames(ci_p)
+# "ABP"   "Ha1_T" "Ho1_T"
+Site2 <- ci_p[,2] # Harvard
+Site3 <- na.omit(ci_p[,3])#Howland
+Site4 <- na.omit(ci_p[,1])#ABP
+
+# RUNNING BREAK POINT AND SLOPE FOR EACH SITE [RESULTS REPORTED IN THE SUPP MATERIAL]
+## break points per site:
+pettitt.test(na.omit(Site2))
+pettitt.test(na.omit(Site3))
+pettitt.test(na.omit(Site4))
+## slopes per site for 1901-2012
+sens.slope(na.omit(Site2), conf.level = 0.95)
+sens.slope(na.omit(Site3), conf.level = 0.95)
+sens.slope(na.omit(Site4), conf.level = 0.95)
+## slopes per site after the break point
+sens.slope(na.omit(Site2[time(Site2)>1978]))
+sens.slope(na.omit(Site3[time(Site3)>1979]))
+sens.slope(na.omit(Site4[time(Site4)>1975]))
+
+# ci/ca RATIO-OPTIMALITY THEORY/LEAST COST [1901-2012] --------------------------------
+
+# Calculate Ci/ca parameter following 2 models.
+NE_vpd <- read.csv("NE_vpd.csv", header=TRUE)# From PRISM in hPA
+VPD_kp <- ts(NE_vpd/10 , start=1901, frequency = 1)# from hpa to kpa
+
+# Calculate ci/ca following the optimal theory hypothesis (Medelyn et al GCB 2011)
+g1 <- 2.35 #4.31# Values for Evergreen Gymno trees from Lin et al., 2015
+opti_Medelyn <- 1-((1.6*sqrt(VPD_kp))/(g1+sqrt(VPD_kp))); colnames(opti_Medelyn)<- colnames(NE_vpd)
+# test (back calculation) of g1 from ci/ca data as in Medelyn et al., 2017.
+# test_g1 <- (rt_ci_p*sqrt(VPD_kp))/(1-rt_ci_p)
+## Min. 1st Qu.  Median    Mean   3rd Qu.    Max.    
+# 1.456   1.988   2.292   2.349   2.617   3.800  
+
+
+
+ABP_m <- summary(lm(na.omit(rt_ci_p[,1])~na.omit(opti_Medelyn[,1])))
+harv_m <- summary(lm(na.omit(rt_ci_p[,2])~na.omit(opti_Medelyn[,2])))
+how_m <- summary(lm(na.omit(rt_ci_p[,3])~na.omit(opti_Medelyn[,3])))
+
+
+# Calculate ci/ca following least-cost optimality hypothesis 
+# (Prentice et al., 2014; Wang et al., 2017b; Stocker et al., 2019a)
+VPD_pa <- NE_vpd*100
+
+#USING JJA (SUMMER)
+opti_Prentice_ABP <- rpmodel(tc = temp_NE_JJA[,1], vpd = VPD_pa$ABP_JJA, co2 =atm_C,fapar= NA,ppfd=NA, elv =303)
+opti_Prentice_Ha1 <- rpmodel(tc = temp_NE_JJA[,2], vpd = VPD_pa$Ha1_JJA, co2 =atm_C,fapar= NA,ppfd=NA, elv =60)
+opti_Prentice_Ho1 <- rpmodel(tc = temp_NE_JJA[,3], vpd = VPD_pa$Ho1_JJA, co2 =atm_C,fapar= NA,ppfd=NA, elv =342)
+#USING GROWING SEASON (gs) APRIL-SEPTEMBER
+opti_Prentice_ABP_gs <- rpmodel(tc = temp_NE_AMJAS[,1], vpd = VPD_pa$ABP_AMJJAS, co2 =atm_C,fapar= NA,ppfd=NA, elv =303)
+opti_Prentice_Ha1_gs <- rpmodel(tc = temp_NE_AMJAS[,2], vpd = VPD_pa$Ha1_AMJJAS, co2 =atm_C,fapar= NA,ppfd=NA, elv =60)
+opti_Prentice_Ho1_gs <- rpmodel(tc = temp_NE_AMJAS[,3], vpd = VPD_pa$Ho1_AMJJAS, co2 =atm_C,fapar= NA,ppfd=NA, elv =342)
+
+# ci/ca isotopes, models of optimal theory (Medelyn and Prentice)
+Opti_m_iso <- as.data.frame(cbind(opti_Medelyn,rt_ci_p,
+                                  opti_Prentice_ABP$chi,
+                                  opti_Prentice_Ha1$chi,
+                                  opti_Prentice_Ho1$chi,
+                                  opti_Prentice_ABP_gs$chi,
+                                  opti_Prentice_Ha1_gs$chi,
+                                  opti_Prentice_Ho1_gs$chi))
+
+
+
+## Print correlation and p values of model-data
+r_model_data <- rcorr(as.matrix(Opti_m_iso))[[1]]
+p_model_data <- rcorr(as.matrix(Opti_m_iso))[[3]]
+# write.csv(r_model_data, "model_data_opto.csv")
+
+
+# evaluate the slope for ci/ca
+sens_Opti_m_iso <- matrix(ncol=3,nrow = ncol(Opti_m_iso)); rownames(sens_Opti_m_iso) <- colnames(sens_Opti_m_iso)
+for (i in ncol(Opti_m_iso )){sens_Opti_m_iso[,1] <- sens.slope(na.omit(Opti_m_iso[,i]), conf.level = 0.95)$estimates}
+for (i in ncol(Opti_m_iso )){sens_Opti_m_iso[,2] <- sens.slope(na.omit(Opti_m_iso[,i]), conf.level = 0.95)$p.value}
+for (i in ncol(Opti_m_iso )){sens_Opti_m_iso[,3] <- sens.slope(na.omit(Opti_m_iso[,i]), conf.level = 0.95)$p.value} 
+
+
+# Plot Model_data comparison
+# Prentice
+par(mar=c(3,4,1,3), lwd=0.7)
+plot(Opti_m_iso$`opti_Prentice_ABP$chi`, Opti_m_iso$rt_ci_p.ABP, xlim=c(0.4,0.8), ylim=c(0.4,0.8), pch=19, col="#084594")
+abline(0,1, lty=2,lwd=2, col="grey")
+points(Opti_m_iso$`opti_Prentice_Ha1$chi`, Opti_m_iso$rt_ci_p.Ha1_T, pch=19,col="#6BAED6")
+points(Opti_m_iso$`opti_Prentice_Ho1$chi`, Opti_m_iso$rt_ci_p.Ho1_T, pch=19,col="#4292C6")
+points(Opti_m_iso$`opti_Prentice_ABP_gs$chi`, Opti_m_iso$rt_ci_p.ABP, pch=19,col="#00441B")
+points(Opti_m_iso$`opti_Prentice_Ha1_gs$chi`, Opti_m_iso$rt_ci_p.Ha1_T, pch=19,col="#238B45")
+points(Opti_m_iso$`opti_Prentice_Ho1_gs$chi`, Opti_m_iso$rt_ci_p.Ho1_T, pch=19,col="#66C2A4")
+
+
+# Medlyn
+par(mar=c(3,4,1,3), lwd=0.7)
+plot(Opti_m_iso$opti_Medelyn.ABP_AMJJAS, Opti_m_iso$rt_ci_p.ABP, pch=17,col="#00441B",xlim=c(0.4,0.8), ylim=c(0.4,0.8) )
+abline(0,1, lty=2,lwd=2, col="grey")
+points(Opti_m_iso$opti_Medelyn.Ha1_AMJJAS, Opti_m_iso$rt_ci_p.Ha1_T, pch=17,col="#238B45")
+points(Opti_m_iso$opti_Medelyn.Ho1_AMJJAS, Opti_m_iso$rt_ci_p.Ho1_T, pch=17,col="#66C2A4")
+points(Opti_m_iso$opti_Medelyn.ABP_JJA, Opti_m_iso$rt_ci_p.Ha1_T, pch=17,col="#084594")
+points(Opti_m_iso$opti_Medelyn.Ha1_JJA, Opti_m_iso$rt_ci_p.Ha1_T, pch=17,col="#6BAED6")
+points(Opti_m_iso$opti_Medelyn.Ho1_JJA, Opti_m_iso$rt_ci_p.Ho1_T, pch=17,col="#4292C6")
+
+
+#declare variables (average of modelled ci/ca for summer and GWS)
+NE_medelyn_JJA <- rowMeans(Opti_m_iso[,1:3], na.rm = TRUE)
+NE_medelyn_AMJJAS <- rowMeans(Opti_m_iso[,4:6], na.rm = TRUE)
+NE_prentice_JJA <- rowMeans(Opti_m_iso[,10:12], na.rm = TRUE)
+NE_prentice_AMJJAS <- rowMeans(Opti_m_iso[,13:15], na.rm = TRUE)
+
+
+#plot comparing ci/ca from isotopes and models
+plot(rt_3H_mean_p, ylim=c(0.4,0.8), col="white", xlab="", ylab="")
+lines(ts(ffcsaps(as.vector(rt_3H_mean_p),nyrs = 30),start = 1901, end = 2012, frequency = 1))
+lines(ts(ffcsaps(as.vector(NE_prentice_JJA ),nyrs = 30),start = 1901, end = 2012, frequency = 1), col="#6BAED6")
+
+# Model-data comparison (R2adj and RMSE) for model mean and sites
+#** Model mean****
+model_data_all_prentice_JJA  <- summary(lm(na.omit(rt_3H_mean_p)~na.omit(NE_prentice_JJA)))
+model_data_all_prentice_AMJJAS  <- summary(lm(na.omit(rt_3H_mean_p)~na.omit(NE_prentice_AMJJAS)))
+rmse(rt_3H_mean_p,NE_prentice_JJA)
+rmse(rt_3H_mean_p,NE_prentice_AMJJAS)
+
+#** ABP Site
+model_data_ABP_JJA <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.ABP)~na.omit(Opti_m_iso$`opti_Prentice_ABP$chi`)))
+model_data_ABP_AMJJAS  <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.ABP)~na.omit(Opti_m_iso$`opti_Prentice_ABP_gs$chi`)))
+rmse(na.omit(Opti_m_iso$rt_ci_p.ABP),na.omit(Opti_m_iso$`opti_Prentice_ABP$chi`))
+#** Ha1 Site (Harvard)
+model_data_Ha1_JJA <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.Ha1_T)~na.omit(Opti_m_iso$`opti_Prentice_Ha1$chi`)))
+model_data_Ha1_AMJJAS  <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.Ha1_T)~na.omit(Opti_m_iso$`opti_Prentice_Ha1_gs$chi`)))
+rmse(Opti_m_iso$rt_ci_p.Ha1_T,Opti_m_iso$`opti_Prentice_Ha1$chi`)
+rmse(Opti_m_iso$rt_ci_p.Ha1_T,Opti_m_iso$`opti_Prentice_Ha1_gs$chi`)
+rmse(na.omit(Opti_m_iso$rt_ci_p.Ha1_T),na.omit(Opti_m_iso$`opti_Prentice_Ha1_gs$chi`))
+#** Ho1 Site (Howland)
+model_data_Ho1_JJA <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.Ho1_T)~na.omit(Opti_m_iso$`opti_Prentice_Ho1$chi`)))
+model_data_Ho1_AMJJAS  <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.Ho1_T)~na.omit(Opti_m_iso$`opti_Prentice_Ho1_gs$chi`)))
+rmse(na.omit(Opti_m_iso$rt_ci_p.Ho1_T),na.omit(Opti_m_iso$`opti_Prentice_Ho1$chi`))
+rmse(na.omit(Opti_m_iso$rt_ci_p.Ho1_T),na.omit(Opti_m_iso$`opti_Prentice_Ho1_gs$chi`))
+
+
+# extra set of verif (convinient for plot)
+actual_NE <- rt_3H_mean_p
+predicted_NE <-  NE_prentice_JJA
+predict(lm(na.omit(rt_3H_mean_p)~na.omit(NE_prentice_JJA)))
+rmse(actual_NE,NE_prentice_JJA)
+
+
+
+#PLOT x for each site
+layout(matrix(1:3,ncol = 3,nrow = 1),widths = c(4,4,4), 
+       heights = c(4,4,4),  respect = T)
+
+plot(Opti_m_iso$`opti_Prentice_ABP$chi`, ylim=c(0.4,0.8 ),type="l", axes=F, xlab="", ylab="")
+lines(Opti_m_iso$rt_ci_p.ABP, col="turquoise3")
+lines(Opti_m_iso$`opti_Prentice_ABP_gs$chi`, col="orange")
+box()
+axis(1, at=seq(1900, 2010, by=20),las=1 , tck = 0.02,padj = -1)
+axis(2, at=seq(0.3, 0.8, by=0.1),las=1 , tck = 0.02,hadj=0.5)
+mtext(side= 2, text = "ci/ca", line = 1.9)
+mtext(side= 1, text = "Year", line = 1.9)
+legend("topleft", "ABP", col="black", bty = "n")
+
+plot(Opti_m_iso$`opti_Prentice_Ha1$chi`, ylim=c(0.4,0.8 ),type="l")
+lines(Opti_m_iso$rt_ci_p.Ha1_T, col="turquoise3")
+
+plot(Opti_m_iso$`opti_Prentice_Ho1$chi`, ylim=c(0.4,0.8 ),type="l")
+lines(Opti_m_iso$rt_ci_p.Ho1_T, col="turquoise3")
+
+
+# Stats for Modeled and observed ci/ca 
+
+rt_all_ci <- as.vector(c(Opti_m_iso$rt_ci_p.ABP,Opti_m_iso$rt_ci_p.Ha1_T,Opti_m_iso$rt_ci_p.Ho1_T))
+rt_all_Xi <- as.vector(c(Opti_m_iso$`opti_Prentice_ABP$chi`,Opti_m_iso$`opti_Prentice_Ha1$chi`,Opti_m_iso$`opti_Prentice_Ho1$chi`))
+all_m_x  <- summary(lm(na.omit(rt_all_ci)~na.omit(rt_all_Xi)))$adj.r.squared
+model_data_all_medlyn_JJA  <- summary(lm(na.omit(rt_3H_mean_p)~na.omit(NE_medelyn_JJA)))$adj.r.squared
+model_data_all_medlyn_AMJJAS  <- summary(lm(na.omit(rt_3H_mean_p)~na.omit(NE_medelyn_AMJJAS)))$adj.r.squared
+
+ABP_m_x  <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.ABP)~na.omit(Opti_m_iso$`opti_Prentice_ABP$chi`)))$adj.r.squared
+harv_m_x <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.Ha1_T)~na.omit(Opti_m_iso$`opti_Prentice_Ha1$chi`)))$adj.r.squared
+how_m_x  <- summary(lm(na.omit(Opti_m_iso$rt_ci_p.Ho1_T)~na.omit(Opti_m_iso$`opti_Prentice_Ho1$chi`)))$adj.r.squared
+
+model_data_stats <- summary(Opti_m_iso)
+plot(rt_all_Xi,rt_all_ci)
+
+
+
+# MODELING OF PHYSIOLOGY --------------------------------------------------
+## Modeling of A, stomatal limitation. 
+# Fixed Parameters
+Kc = 404 # 260 or 404 if ci=cc von Caemmerer 1994
+Ko = 248 # 179 or 248 if ci=cc
+GammaStar = 37 # 38.6 or 37 if ci=cc von Caemmerer 1994. Note: Unit is microbar (ubar)
+OXY = 21
+Vcmax = 17.05 # Li et al data for tsuga for May and August. Mar-Oct values are 18.49
+jmax= 39.43 #   Li et al data for tsuga for May and August. Mar-Oct values are 45.56
+Vomax = Vcmax*0.25
+Rd = .5 #0.554 # range 0.01 - 0.02
+
+# 1- calculate gstar for each site 
+# USING RPMODEL FUNCTIONS TO CALCULATE GAMMA STAR 
+# Note: gammastart from rpmodel is in Pa (converting to ubar)
+gstar_ABP <- (calc_gammastar(temp_NE_JJA[,"ABP_JJA"], (calc_patm(elv = 342))))*10
+gstar_Ha1 <- (calc_gammastar(temp_NE_JJA[,"Ha1_JJA"], (calc_patm(elv = 303))))*10
+gstar_Ho1 <- (calc_gammastar(temp_NE_JJA[,"Ho1_JJA"], (calc_patm(elv = 60))))*10
+gstar_NE <- ts(rowMeans((cbind(gstar_ABP,gstar_Ha1,gstar_Ho1)), na.rm=T),start=1901) # 3 sites average (NE)
+
+## Make a gstar plot comparing 3 sites, NE and fixed value from von Caemmerer 1994
+plot.ts(gstar_ABP, ylim=c(25,40), col="firebrick3",ylab=" Γ* (μbar)")
+lines(gstar_Ha1, col="blue3")
+lines(gstar_Ho1, col="orange3")
+lines(gstar_NE, col="olivedrab4", lty=2, lwd=3)
+legend("topleft", c("gstar-ABP","gstar-Ha1","gstar-Ho1","gstar-NE"),ncol=1,
+       lty=c(1,1,1,2),lwd=c(1,1,1,3),col=c("firebrick3","blue3","orange3","olivedrab4"),
+       bty = "n", text.col=c("firebrick3","blue3","orange3","olivedrab4"), cex=1)
+abline(h=37, lty=3)
+legend(x=1960, y=39, "gstar [von Caemmerer 1994]",bty = "n")
+
+# 2- Calculate Michaelis-Menten coefficient
+# USING RPMODEL FUNCTIONS TO CALCULATE GAMMA STAR 
+# Note: kmm from rpmodel is in Pa (converting to ubar)
+kmm_ABP <- (calc_kmm(temp_NE_JJA[,"ABP_JJA"], (calc_patm(elv = 342))))*10 
+kmm_Ha1 <- (calc_kmm(temp_NE_JJA[,"Ha1_JJA"], (calc_patm(elv = 303))))*10 
+kmm_Ho1 <- (calc_kmm(temp_NE_JJA[,"Ho1_JJA"], (calc_patm(elv = 60))))*10
+kmm_NE <- ts(rowMeans((cbind(kmm_ABP,kmm_Ha1,kmm_Ho1)), na.rm=T),start=1901)
+
+
+# 3- Calculate J, using Jmax and Par
+alef = 0.331 # quantum yield of electron transport (0.3 mol electrons mol-1 photons) after Walker 2014
+theta = 0.825 # the curvature of the light response curve after Walker 2014
+load("./data/Harvard.ameriflux.allsites.L2_data.05Mar2016.RData")
+PAR1 = HarvardHa1$PAR
+PAR = PAR1[PAR1>-1]
+j = (jmax +alef*PAR - sqrt((jmax+alef*PAR)^2-4*theta*jmax*alef*PAR))/2*theta
+# Equation A 4 from Walker 2014 (supplementary material) modified from Farquhar and Wong 1984
+j=max(j)
+
+# 4- Calculate Rubisco Limited Photosythesis (Ac)
+# Using EQ 2 in Medlyn et al 2004 PC&E.
+Ac_medlyn <- (Vcmax*(NEci_hemlock_p-gstar_NE))/(NEci_hemlock_p+kmm_NE)
+# 5- Calculate RuBP Regeneration limited (Aj)
+Aj_medlyn <- (j/4)*((NEci_hemlock_p-gstar_NE)/(NEci_hemlock_p+(2*gstar_NE)))
+
+# 6- Calculate CO2 Assimilation A
+# Enzyme kinetic models of photosynthesis (Farquhar et al. 1980) simulate net CO2 assimilation 
+# (A) as the minimum of the RuBisCO‐limited gross carboxylation rate (Ac) 
+# and the electron transport‐limited gross carboxylation rate (Aj)
+# This is calculated using EQ 1 in Medlyn et al 2004 PC&E.
+# Note: this is slightly different from EQ 2 in Walaker et al 2014 Ecology & Evolution where 
+# it is scaled to photorespiration (1-gammastar/ci)
+A_medlyn <- (pmin(Ac_medlyn,Aj_medlyn))-Rd #Use for plot in Figure 4
+# plot assimilation rates
+plot.ts(Ac_medlyn, ylim=c(2.5,6.5), col="gray48", ylab="Assimilation")
+lines(Aj_medlyn, col="blue3")
+lines(A_medlyn,col="firebrick3", lty=3, lw=2)
+legend("topleft", c("Ac [Rubisco-limited]","Aj [RuBP-limited]","A [min (Ac,Aj)-Rd]"),ncol=1,
+         lty=c(1,1,3),lwd=c(1,1,2),col=c("gray48","blue3","firebrick3"),
+         bty = "n", text.col=c("gray48","blue3","firebrick3"), cex=1)
+# 6- Calculate A using fixed gstar and fixed Michaelis-Menton constants
+# This are previous calculation with slight difference of Γ* and equation writing (where Rd is included)
+
+# 6.1 calculate rate of carboxy
+Ac_simple = ((NEci_hemlock-GammaStar)*Vcmax / (NEci_hemlock + Kc*(1+OXY/Ko))) - Rd  # with ci + fixed gamma star
+Ac_foto = ((NEci_hemlock_p-GammaStar)*Vcmax / (NEci_hemlock_p + Kc*(1+OXY/Ko))) - Rd # with ci including photo + fixed gamma star
+Ac_foto_b = ((NEci_hemlock_p-gstar_NE)*Vcmax / (NEci_hemlock_p + Kc*(1+OXY/Ko))) - Rd #with ci including photo + rpmodel gamma star
+
+# 6.2 calculate rate of ruBP regen  
+Aj_simple = ((NEci_hemlock - GammaStar)*j)/(4*NEci_hemlock+8*GammaStar)-Rd # with ci + fixed gamma star
+Aj_foto = ((NEci_hemlock_p - GammaStar)*j)/(4*NEci_hemlock_p+8*GammaStar)-Rd # with ci including photo + fixed gamma star
+Aj_foto_b = ((NEci_hemlock_p - gstar_NE)*j)/(4*NEci_hemlock_p+8*gstar_NE)-Rd #with ci including photo + rpmodel gamma star
+
+# 6.3 calculate A 
+A_simple = pmin(Ac_simple, Aj_simple) # ci
+A_foto = pmin(Ac_foto, Aj_foto) #ci photo
+A_foto_b = pmin(Ac_foto_b, Aj_foto_b) #ci photo+ rpmodel gamma star
+
+# 6.4 Make a A plot to compare different model assumptions and calculations of A
+plot.ts(A_simple, ylim=c(3,4.5), ylab="Assimilation", col="firebrick3")
+lines(A_foto, col="blue3")
+lines(A_foto_b, col="orange3")
+lines (A_medlyn, col="olivedrab4",lty=3, lwd=2.5)
+legend("bottomright", c("A-ci [fixed Γ*]","A-ci Photo [fixed Γ*]","A-ci Photo [rpmodel Γ*] ","A- ci Photo [rpmodel Γ* & MM]"),
+       ncol=1,
+       lty=c(1,1,1,2.5),lwd=c(1,1,1,3),col=c("firebrick3","blue3","orange3","olivedrab4"),
+       bty = "n", text.col=c("firebrick3","blue3","orange3","olivedrab4"), cex=1)
+# Note: The differnce between various calculations (derivation of A equation) and input data (mainly ci- simple vs photo)
+# is seen when including a fixed Γ* or estimating it based on T and Pressure. Usung fixed MM constants vs estimating them
+#  based on T and Pressure did not result in a noticeable difference as shown in Figure above.
+# summary(A_medlyn==AjHaT_foto_b) FALSE (34)   TRUE (78)
+
+# calculate AJ for Ca considering infinite gs 
+Aj_ca = ((ca - GammaStar)*j)/(4*ca+8*GammaStar) -Rd
+Aj_ca_b = ((ca - gstar_NE)*j)/(4*ca+8*gstar_NE) -Rd
+
+# 7.CALCULATE RSL
+RSL <- Aj_ca-Aj_simple
+RSL_foto <- Aj_ca-Aj_foto
+RSL_foto_b <- Aj_ca_b-Aj_foto_b
+RSL_Medlyn <- Aj_ca_b-(Aj_medlyn-Rd) # Use This for Figure 4 in REVISION
+# Note: Adding Rd to AJ  because Rd was in the A eq. For consistency with Aj_ca_b calculation
+
+# 10 Relative increase without light limitation
+RelIncrease= (max(A_simple)-min(A_simple))/min(A_simple)*100
+RelIncrease_foto= (max(A_foto)-min(A_foto))/min(A_foto)*100
+RelIncrease_foto_b= (max(A_foto_b)-min(A_foto_b))/min(A_foto_b)*100
+RelIncrease_Medlyn= (max(A_medlyn)-min(A_medlyn))/min(A_medlyn)*100 #Use this in result discussion
+
+# 11. Adressing reviwer 1 question about varying Vcmax and Jmax by 15%
+# Vcmax will be varied by 2.55
+Vcmax_up =19.6
+Vcmax_low=14.5
+# jmax will be varied by 3.98
+j_up= 30.53
+j_low=22.57
+
+# calculating A (up)
+Ac_medlyn_up <- (Vcmax_up*(NEci_hemlock_p-gstar_NE))/(NEci_hemlock_p+kmm_NE)
+Aj_medlyn_up <- (j_up/4)*((NEci_hemlock_p-gstar_NE)/(NEci_hemlock_p+(2*gstar_NE)))
+A_medlyn_up <- (pmin(Ac_medlyn_up,Aj_medlyn_up))-Rd
+
+# calculating A (low)
+Ac_medlyn_low <- (Vcmax_low*(NEci_hemlock_p-gstar_NE))/(NEci_hemlock_p+kmm_NE)
+Aj_medlyn_low <- (j_low/4)*((NEci_hemlock_p-gstar_NE)/(NEci_hemlock_p+(2*gstar_NE)))
+A_medlyn_low <- (pmin(Ac_medlyn_low,Aj_medlyn_low))-Rd
+
+
+# Calculating various outputs for low and up bounds
+RSL_Medlyn_up <- Aj_ca_b-A_medlyn_up #RSL
+RSL_Medlyn_low <- Aj_ca_b- A_medlyn_low #RSL
+
+# Relative increase without light limitation
+RelIncrease_Medlyn_up= (max(A_medlyn_up)-min(A_medlyn_up))/min(A_medlyn_up)*100
+RelIncrease_Medlyn_low= (max(A_medlyn_low)-min(A_medlyn_low))/min(A_medlyn_low)*100 
+
+# slopes of A increase
+s_slopes <- c(sens.slope(A_medlyn_low)$estimates,sens.slope(A_medlyn)$estimates,sens.slope(A_medlyn_up)$estimates)
+J_ce <- c(j_low,j,j_up)
+Vcmax_ce <- c(Vcmax_low,Vcmax, Vcmax_up)
+# Make plot for A to include in response to Reviwer 1
+# png(filename = "A_reviwer1.png",width = 8, height = 6,pointsize = 11,units = "in",res = 600)
+layout(matrix(1:2,nrow = 1, ncol = 2,byrow = F), widths = c(4,4),heights = c(3,3),respect = TRUE)
+par(mar=c(4,4,2,0.2), lwd=0.8)
+plot.ts(A_medlyn, ylim=c(2,6), ylab="Assimilation (μmol m-2 s-1)")
+timevec <- as.vector(c(1901:2012))
+polygon(x=c(timevec, rev(timevec)), y= c(na.omit(A_medlyn_up), rev(as.vector(na.omit(A_medlyn_low)))),
+         col = rgb(0.7,0.6,0.2,0.3), border = NA)
+par(mar=c(4,4,2,4), lwd=0.8)
+plot(x=Vcmax_ce,y=s_slopes, ylim=c(0,0.005), xlim=c(14,20), ylab="A-slopes", 
+     xlab="Vcmax", pch=15, col="darkgoldenrod3", cex=2.5)
+# dev.off()
+# FIGURES -----------------------------------------------------------------
+
+      # MAIN FIGURES ------------------------------------------------------------
+          # FIGURE 1 ----------------------------------------------------------------
+# png(filename = "FIG1-NEW.png",width = 8, height = 6,pointsize = 11,units = "in",res = 600)
+# pdf("FIG1_GCB.pdf", useDingbats=FALSE)
+layout(matrix(1:3,nrow = 3, ncol = 1,byrow = F), widths = c(3.8),heights = c(1.9,1.5,1.2),respect = TRUE)
+par(mar=c(0,2,4,0.5), lwd=0.5)
+#Plot of iWUE
+plot(IWUE_hemlock_1910_p, ylim=c(-10,50), xlim=c(1900,2015),xlab="", ylab="", col="darkgoldenrod",axes=F, type="l", lwd=1)
+box()
+axis(3, at=seq(1900, 2012, by=20),las=1 , labels = T,tck = 0.02,padj = 1, lwd=0.5)
+axis(2, at=seq(-10, 45, by=10),las=1 , tck = 0.02,hadj=0.5, lwd=0.5)
+axis(1, at=seq(1900, 2012, by=20),las=1 , labels = F,tck = 0.02,padj = 1, lwd=0.5)
+lines(x=window1, y=predict(lm(hemlock_w1_percent_2~window1)), col="darkgoldenrod", lw=1.2)
+lines(x=window2, y=predict(lm(hemlock_w2_percent_2~window2)), col="darkgoldenrod", lw=1.2)
+lines(x=window3, y=predict(lm(hemlock_w3_percent_2~window3)), col="darkgoldenrod", lw=1.2)
+mtext(side= 2, text = "iWUE (percentage of change  \n w.r.t. 1901-1910)", line = 1.9,cex=0.8)
+
+time2 <- as.vector(c(1901:2012))
+polygon( x=c(time2, rev(time2)), y= c(na.omit(IWUE_hemlock_1910_up_p), rev(as.vector(na.omit(IWUE_hemlock_1910_low_p)))),
+         col = rgb(0.7,0.6,0.2,0.3), border = NA)
+legend(x=1910,y=20,c("0.27±0.08 %"), bty="n", text.col ="darkgoldenrod", cex=1)
+legend(x=1950,y=45,c("0.53±0.28 %"), bty="n", text.col ="darkgoldenrod", cex=1)
+legend(x=1980,y=50,c("0.12±0.15 %"), bty="n", text.col ="darkgoldenrod", cex=1)
+
+par(new = T)
+plot(atm_C,xlab="", ylab="",axes=F, lwd=1.2)
+axis(4, at=seq(290, 400, by=20),las=1 , labels = T,tck = 0.02,padj =0.5,hadj=0.5, lwd=1)
+mtext(side= 4, text =  substitute(paste("c" [a] , " (ppm)")), line = 2.1,cex=0.8)
+legend("bottomright", "(b)", bty = "n", cex=1)
+
+
+legend(x=1960, y=310,"iWUE",
+       lty=1,lwd=c(0.8),col="darkgoldenrod", bty = "n", text.col="darkgoldenrod", cex=1)
+legend(x=1980, y=310,legend=(substitute(paste("c" [a]))),lty=1,lwd=1,col="black", bty = "n", cex=1)
+
+# plot ci
+par(mar=c(0,2,0,0.5), lwd=0.5)
+plot.ts(NEci_hemlock_p, ylim=c(140,300), xlim=c(1900,2015),xlab="", ylab="", col="black",axes=F, lwd=1)
+box()
+lines(ci_p[,1], col="gray56", lwd=0.5)
+lines(ci_p[,2], col="gray56", lwd=0.5)
+lines(ci_p[,3], col="gray56", lwd=0.5)
+lines(NEci_hemlock_p, col="black", lwd=1)
+axis(1, at=seq(1900, 2012, by=20),las=1 , labels = F,tck = 0.02,padj = -1, lwd=0.5)
+axis(4, at=seq(140, 300, by=50),las=1 , tck = 0.02,hadj=0.5, lwd=0.5)
+
+mtext(side= 4, text =  substitute(paste("c" [i] , " (ppm)")), line = 2.5,cex=0.8)
+time1 <- c(1901:2012)
+polygon( x=c(time1, rev(time1)), y= c(na.omit(NEci_hemlock_up_p), rev(as.vector(na.omit(NEci_hemlock_low_p)))),
+         col = rgb(0.1,0.1,0.1,0.2), border = NA)
+
+legend("bottomright","(c)", bty = "n", cex=1.2)
+
+#PLOT OF CLIMATE AND CI
+par(mar=c(3,2,0,0.5), lwd=0.5)
+plot(c(1901:2012),(Z_JJA_4S_vpd*-1), xlim=c(1900,2015),col="cyan3", lwd=0.8, ylim=c(-3.5,3), ylab="", axes=F, type="l", xlab="");box()
+lines(c(1901:2012),(Z_JJA_4S*1), col="blue2",lw=0.8, lty=1)
+lines(c(1901:2012),(Z_CI_3H*1), col="gray15",lw=1, lty=1)
+abline(h=0, lty=2)
+axis(1, at=seq(1900, 2012, by=20),las=1 ,labels = T, tck = 0.02,padj = -1, lwd=0.5)
+axis(4, at=seq(-3, 3, by=1),las=1 , tck = 0.02,hadj=0.5, lwd=0.5)
+mtext(side= 4, text = "Z-scores", line = 2.5,cex=0.8)
+mtext(side= 1, text = "Year", line = 1.9, cex=0.8)
+
+legend("bottomright","(d)", bty = "n", cex=1.2)
+legend(x=1920, y=-2.5,legend=(substitute(paste("c" [i]))),lty=1,lwd=1,col="black", bty = "n", cex=1)
+legend(x=1940, y=-2.5, c("Precipitation (JJA)","VPD (JJA inverted)"),ncol=2,
+       lty=c(1,1),lwd=c(0.8,0.8),col=c("blue2","cyan3"), bty = "n", text.col=c("blue2","cyan3")
+       , cex=1)
+
+# dev.off()
+
+
+
+          # FIGURE 2 ----------------------------------------------------------------
+
+# time vectors for linear regression ans plot axes
+Time92<-c(1992:2012)
+Time93<-c(1993:2012)
+now <-c(1992:2010)
+now93 <-c(1993:2010)
+
+# pdf("FIG2_GCB.pdf", useDingbats=FALSE)
+layout(matrix(1:3,nrow = 3, ncol = 1,byrow = F), widths = c(3.8),heights = c(1.9,1.5,1.2),respect = TRUE)
+
+# CI PLOT
+par(mar=c(0,2,4,0.5), lwd=0.5)
+plot(R_ci [,1], ylim=c(170,300), type="n", axes=F,xlab="", ylab="", xlim=c(1990,2015))
+box()
+for (i in 1:11) points(R_ci_foto[,i], pch=19, col="gray")
+for (i in 1:10)
+  lines(x=Time92, y=predict(lm(R_ci_foto [,i]~Time92)), col="gray", lw=1.2)
+lines(x=now, y=predict(lm(na.omit(R_ci_foto [,11])~now)), col="gray", lw=1.2)
+axis(1, at=seq(1990,2015, by=2),las=1 ,labels = F,tck = 0.02,padj = -1, lwd=0.5)
+axis(2, at=seq(170,300, by=20),las=1 ,labels = T,tck = 0.02, lwd=0.5, hadj = 0.5)
+axis(3, at=seq(1990,2015, by=2),las=1 ,labels = T,tck = 0.02,padj = 1, lwd=0.5)
+mtext(side= 2, text = substitute(paste("c" [i] , " (ppm)")), line = 1.9,cex=0.8)
+lines(x=Time92, y=predict(lm(R_ci_11_foto~Time92)), col="black", lwd=2)
+legend(x=1992, y=290, "Slope 1.83 ±0.5 ppm", bty = "n", cex=1)
+legend("bottomleft", "(a)", bty = "n", cex=1)
+
+# iWUE PERCENT CHANGE
+par(mar=c(0,2,0,0.5), lwd=0.5)
+plot(mean_percent_wue_photo [,1], ylim=c(-20,20), type="n", axes=F,xlab="", ylab="", xlim=c(1990,2015))
+box()
+for (i in 1:11) points(mean_percent_wue_photo [,i], pch=19, col="gray")
+abline(h=0)
+for (i in 1:10)lines(x=Time93, y=predict(lm(mean_percent_wue_photo[,i]~Time93)), col="gray", lw=1.2)
+lines(x=now93, y=predict(lm(na.omit(mean_percent_wue_photo[,11])~now93)), col="gray", lw=1.2)
+axis(1, at=seq(1990,2015, by=2),las=1 ,labels = F,tck = 0.02,padj = -1, lwd=0.5)
+legend("bottomleft", "(b)", bty = "n", cex=1)
+legend(x=1990, y=20, c("Slope 0.05","P=0.58"), bty = "n", cex=1,ncol=1)
+par(mar=c(4,3,0,0.1), lwd=0.5)
+axis(2, at=seq(-15,15, by=10),las=1 ,labels = T,tck = 0.02, lwd=0.5, hadj = 0.5)
+mtext(side= 2, text = "Percent change in iWUE", line = 1.9, cex=0.8)
+
+# plot of SVD and Precipitation
+PCP_8 <- rowMeans(R_NE_PCP[,1:8])
+PCP_recent <-ts((scale(PCP_8 ,center = TRUE, scale = TRUE)), start=1992)
+pc_recent <- ts(PC1_R8_ci_p,start=1992)
+
+par(mar=c(3,2,0,0.5), lwd=0.5)
+plot.ts(PCP_recent, axes=F, xlab=F, ylab= F, type="l", col="blue2", lwd=1.3, ylim=c(-1.5,2.5), xlim=c(1990,2015));box()
+axis(1, at=seq(1990,2015, by=2),las=1 ,labels = T,tck = 0.02,padj = -1, lwd=0.5)
+axis(2, at=seq(-1.5,2.5, by=1),las=1 ,labels = T,tck = 0.02, lwd=0.5, hadj = 0.5,col.axis="blue2")
+mtext(side= 2, text = "Precipitation Z-scores", line = 1.9, cex=0.8,col="blue2" )
+
+legend("bottomleft", "(c)", bty = "n", cex=1)
+legend(x=2000, y=1.2, "r=0.48 P<0.05", bty = "n", cex=1)
+par(new=T)
+plot.ts(pc_recent, axes=F, col="black", lwd=1.3, ylim=c(-25,25), xlim=c(1990,2015))
+axis(4, at=seq(-25,25, by=10),las=1 ,labels = T,tck = 0.02, lwd=0.5, hadj = 0.5)
+mtext(side= 4, text = "PC1", line = 2.5,cex=0.8,padj = -1, at=1.8)
+# dev.off()
+
+
+
+
+
+          # FIGURE 3 --------------------------------------------------------------
+names <- c("ISO-RECON", "PREDICT")
+dat_1 <- as.data.frame(cbind(actual_NE,predicted_NE))
+
+
+# pdf("FIG3_GCB.pdf", useDingbats=FALSE)
+layout(matrix(1:3,nrow = 1, ncol = 3,byrow = T), widths = c(2.3,2.3,3),heights = c(2.3,2.3,2.3),respect = TRUE)
+# boxplot of observed and predicted
+par(mar=c(0,2,4,0.5), lwd=0.5)
+boxplot(dat_1, names =names, boxwex = 0.25, col = c("#238B45","#6BAED6"), axes=F, border=c("#00441B","#4292C6"), ylim=c(0.5,0.75))
+stripchart(dat_1, vertical=TRUE, add=TRUE, method="stack", col=c("#238B45","#6BAED6"), pch=20)
+axis(1,at=c(1:2), labels = names,las=1,tck = 0.02, lwd=0.5)
+axis(2, at=seq(0.5,0.8,by=0.1), las=1, tck = 0.02,hadj=0.5, lwd=0.5)
+mtext(2, text = (substitute(paste("c" [i], "/", "c" [a]))), line = 2.5)  
+box()
+legend("topright", legend = "(a)", bty = "n", cex=1)
+# observed vs predicted ci/ca
+par(mar=c(0,2,4,0.5), lwd=0.5)
+plot(dat_1[,2],dat_1[,1], xlim=c(0.5,0.75), ylim=c(0.5,0.75), 
+     pch=21, col="gray46",bg="gray81", axes=F, xlab="", ylab="")
+
+lines(x=dat_1[,2], y=predict(lm(dat_1[,1]~dat_1[,2])), col="black", lw=2)
+
+box()
+abline(0,1, lty=2,lwd=2, col="grey")
+axis(1, at=seq(0.5,0.75,by=0.1), las=1 , tck = 0.02,padj=-1, lwd=0.5)
+axis(2, at=seq(0.5,0.75,by=0.1), las=1 , tck = 0.02,hadj=0.5, lwd=0.5)
+legend("topright", legend = "(b)", bty = "n", cex=1)
+# time series and low frequency of ci/ca
+par(mar=c(0,1,4,2), lwd=0.5)
+plot(rt_3H_mean_p, ylim=c(0.5,0.75), col="#238B45", xlab="", ylab="", axes=F)
+box()
+lines(ts(ffcsaps(as.vector(rt_3H_mean_p),nyrs = 30),start = 1901, end = 2012, frequency = 1),col="#238B45")
+lines(ts(NE_prentice_JJA, start=1901, frequency=1),col="#6BAED6" )
+lines(ts(ffcsaps(as.vector(NE_prentice_JJA),nyrs = 30),start = 1901, end = 2012, frequency = 1), col="#6BAED6")
+axis(4, at=seq(0.5,0.75,by=0.1), las=1, tck = 0.02,hadj=0.5, lwd=0.5)
+axis(1, at=seq(1900, 2012, by=20),las=1,tck = 0.02,padj =-1, lwd=0.5)
+
+legend(x=1920, y=0.55, c("ISO-RECON","PREDICT"),ncol=2,
+       lty=c(1,1),lwd=c(0.8,0.8),col=c("#238B45","#6BAED6"), bty = "n", text.col=c("#238B45","#6BAED6")
+       , cex=0.8)
+mtext(side=1 , text = "Year", line = 1.9, cex=1)
+legend("topright", legend = "(c)", bty = "n", cex=1)
+# dev.off()
+
+
+          # FIGURE 4 ----------------------------------------------------------------
+
+# pdf("FIG4_GCB.pdf", useDingbats=FALSE)
+layout(matrix(1:3,nrow = 3, ncol = 1,byrow = F), widths = c(3.8),heights = c(2.3,1.1,2),respect = TRUE)
+#Plot 1 of ci/ca and A
+par(mar=c(0,2,4,0.5), lwd=0.5)
+plot(ts(ffcsaps(na.omit(as.vector(rt_3H_mean_p)),nyrs = 50),
+        start = 1901, end = 2012, frequency = 1), lw=2, col="#238B45", cex=0.5, axes=F, ylim=c(0.5,0.7));box()
+lines(ts(ffcsaps(as.vector(NE_prentice_JJA),nyrs = 50),start = 1901, end = 2012, frequency = 1), col="#6BAED6", lw=2)
+axis(2, at=seq(0.5,0.7, by=0.1),las=1 , tck = 0.02,hadj=0.5, lwd=0.5)
+axis(3, at=seq(1900, 2012, by=20),las=1 , labels = T,tck = 0.02,padj = 1, lwd=0.5)
+mtext(side= 2, text = substitute(paste("c" [i], "/", "c" [a])), line = 2.5,cex=1)
+par(new=T)
+plot(ts(ffcsaps(na.omit(as.vector(A_medlyn)),nyrs = 50),
+        start = 1901, end = 2012, frequency = 1), lw=2, 
+     lty=1,ylim=c(3,5),axes=F, xlab="", ylab="", col="black", cex=0.5)
+
+axis(4, at=seq(3, 5, by=0.5),las=1 , tck = 0.02,hadj=0.5, lwd=0.5, cex.axis=1)
+
+
+legend("bottom", c("ISO-RECON","PREDICT"), ncol=2,
+       lty=c(1,1),lwd=c(1,1), col=c("#238B45","#6BAED6"), bty = "n", text.col=c("#238B45","#6BAED6"), cex=1)
+
+#Plot 2 of RSL
+par(mar=c(0,2,0,0.5), lwd=0.5)
+plot(ts(ffcsaps(na.omit(as.vector(RSL_Medlyn)),nyrs = 50),
+        start = 1901, end = 2012, frequency = 1), col="olivedrab", lw=2.2,lty=3, ylim=c(0.5,0.8),axes=F, xlab="", ylab="")
+box()
+axis(2, at=seq(0.5,0.7, by=0.1),las=1 , tck = 0.02,hadj=0.5, lwd=0.5)
+axis(3, at=seq(1900, 2012, by=20),las=1 , labels = F,tck = 0.03,padj = 1, lwd=0.5)
+axis(1, at=seq(1900, 2012, by=20),las=1 , labels = F,tck = 0.03,padj = -0.9, lwd=0.5)
+mtext(side= 2, text = "RSL", line = 2.5,cex=1)
+
+#Plot 3 of climate
+#precipitation
+par(mar=c(4,2,0,0.5), lwd=0.5)
+pcpb <- as.vector(ZTS4)
+barplot(pcpb, ylim=c(-3,8), col=ifelse(pcpb>0,"#c7eae5","#dfc27d"),axes=F); box()
+axis(4, at=seq(-2, 3, by=1),las=1 , tck = 0.02,hadj=0.5, lwd=0.5, cex.axis=1)
+mtext(side= 4, text = "Z-scores", line = 2.5,cex=0.8,padj = -1, at=0.5)
+# axis(1, at=seq(1900, 2012, by=20),las=1 ,labels = T, tck = 0.02, lwd=0.5)
+
+#VPD
+par(new=T)
+plot(TS4_vpd/10, type="l",axes=F, col="deepskyblue4", lwd=1.2, xlab="", ylab="", ylim=c(0.5,2.2))
+axis(2, at=seq(1, 2, by=0.5),las=1 , tck = 0.02,hadj=0.5, lwd=0.5, cex.axis=1)
+mtext(side= 2, text = "VPD (kPa)", line = 2.5,cex=0.8,padj = -1, at=1.8)
+axis(1, at=seq(0, 100, by=20),las=1 ,labels = seq(1900,200,20), tck = 0.02, lwd=0.5)
+
+# dev.off()
+
+
+
+
+
+
+
+
+      # SUPPLEMENTARY FIGURES ---------------------------------------------------
+
+
+          # FIGURE S1 ------------------------------------------------------------------
+# read disturbance file
+DIS <- read.csv("DIST.csv", header = T)
+# png(filename = "DIS.png",width = 6, height = 3,pointsize = 8,units = "in",res = 600)
+par(mar=c(3,3,0.5,0.5), lwd=0.5)
+layout(matrix(1:2,nrow = 1, ncol = 2,byrow = F), widths = c(2,2),heights = c(2,2),respect = T)
+
+#Plot disturbance of all sites
+plot(x=DIS$Year, y=DIS$BIG, type="h", ylim=c(0,100), xlab="", ylab="", axes=F)
+box()
+rect(xleft=1900, ybottom=0, xright=2012, ytop=100, density =NA, 
+     col = "darkolivegreen3", border = "transparent")
+axis(1, at=seq(1600, 2012, by=50),las=1 , tck = 0.02,padj = -1 , lwd=0.5, cex.axis=0.9)
+axis(2, at=seq(0, 100, by=20),las=1 , tck = 0.02,hadj=0.2, lwd=0.5, cex.axis=0.9)
+mtext(side= 2, text = "% Release", line = 1.9)
+mtext(side= 1, text = "Year", line = 1.9)
+for (i in 2:ncol(DIS)){ lines(x=DIS$Year, y=DIS[,i], type="h")}
+legend("topleft","A", bty = "n", cex=1.2)
+
+#Plot disturbance of all 100-year isotopic sites.
+plot(x=DIS$Year, y=DIS$Harv.TSCA, type="h", ylim=c(0,100),xlim=c(1900,2012), xlab="", ylab="",
+     axes=F, lwd=1)
+box()
+rect(xleft=1900, ybottom=0, xright=2012, ytop=100, density =NA, 
+     col = "darkolivegreen3", border = "transparent")
+axis(1, at=seq(1900, 2012, by=10),las=1 , tck = 0.02,padj = -1 , lwd=0.5, cex.axis=0.9)
+axis(2, at=seq(0, 100, by=20),las=1 , tck = 0.02,hadj=0.2, lwd=0.5, cex.axis=0.9)
+lines(x=DIS$Year, y=DIS$Harv.TSCA, type="h")
+lines(x=DIS$Year, y=DIS$Harv.QURU, type="h")
+lines(x=DIS$Year, y=DIS$ABP, type="h")
+lines(x=DIS$Year, y=DIS$HOW, type="h")
+mtext(side= 2, text = "% Release", line = 1.9)
+mtext(side= 1, text = "Year", line = 1.9)
+legend("topleft","B", bty = "n", cex=1.2)
+abline(h=20, col="darkgoldenrod3", lwd=2)
+
+# dev.off()
+
+
+          # FIGURE S2 ---------------------------------------------------------------
+# png(filename = "PCP_VPD_NE_regime.png",width = 8, height = 6,pointsize = 11,units = "in",res = 600)
+layout(matrix(1:2,nrow = 1, ncol = 2,byrow = F), widths = c(4,4),heights = c(3,3),respect = TRUE)
+par(mar=c(0,3,2,0), lwd=0.5)
+plot(y=ts1,x=1901:2012, type="l", xlim=c(1900,2015), ylim=c(150,700),axes=F, col="cyan3", lwd=2, xlab="", ylab="")
+box()
+
+axis(1, at=seq(1900, 2012, by=10),las=1 , tck = 0.02,padj = -1 , lwd=0.5)
+axis(2, at=seq(150, 700, by=100),las=1 , tck = 0.02,hadj=0.3, lwd=0.5, cex.axis=1)
+mtext(side= 2, text = "PCP (mm)", line = 1.9)
+mtext(side= 1, text = "Year", line = 1.9)
+lines(ts2,col="cyan3", lw=2)
+lines(ts3,col="cyan3", lw=2)
+lines(ts(TS4, start=1901, frequency=1), col="deepskyblue4", lw=3)
+
+# change point detection according to pettit.test which was 1970
+av_PRE70 <- mean(TS4[1:70])
+av_POS70 <-  mean(TS4[71:112])
+segments(x0 = 1901, x1 = 1969,y0 = 279.5,y1 = 279.56,col = "deepskyblue4",lty = ,lwd = 3)
+segments(x0 = 1970, x1 = 2012,y0 = 310.9,y1 = 310.93,col = "deepskyblue4",lty = ,lwd = 3)
+
+par(mar=c(0,0.5,2,3), lwd=0.5)
+plot(y=(ts1_vpd/10),x=1901:2012, type="l", xlim=c(1900,2015),ylim=c(1,2.5), axes=F, col="cyan3", lwd=2, xlab="", ylab="")
+box()
+
+axis(1, at=seq(1900, 2012, by=10),las=1 , tck = 0.02,padj = -1 , lwd=0.5)
+axis(4, at=seq(0.5, 3, by=1),las=1 , tck = 0.02,hadj=0.3, lwd=0.5, cex.axis=1)
+mtext(side= 4, text = "VPD (hPa)", line = 1.9)
+mtext(side= 1, text = "Year", line = 1.9)
+lines((ts2_vpd/10) ,col="cyan3", lw=2)
+lines((ts3_vpd/10),col="cyan3", lw=2)
+lines(ts((TS4_vpd/10), start=1901, frequency=1), col="deepskyblue4", lw=3)
+
+# change point detection according to pettit.test which was 1970
+av_PRE28_vpd <- (mean(TS4_vpd[1:28])/10)
+av_POS28_vpd <-  (mean(TS4_vpd[29:57])/10)
+av_POS57_vpd <-  (mean(TS4_vpd[58:112])/10)
+segments(x0 = 1901, x1 = 1928,y0 = 1.62,y1 = 1.621,col = "deepskyblue4",lty = ,lwd = 3)
+segments(x0 = 1929, x1 = 1957,y0 = 1.84,y1 = 1.842,col = "deepskyblue4",lty = ,lwd = 3)
+segments(x0 = 1958, x1 = 2012,y0 = 1.69,y1 = 1.692,col = "deepskyblue4",lty = ,lwd = 3)
+
+# dev.off()
+
+          # FIGURE S3 -------------------------------------------
+# png(filename = "FIG_RunningCorr.png",width = 8, height = 6,pointsize = 11,units = "in",res = 600)
+
+par(mar=c(5,5,0,5), lwd=0.5)
+plot(central_year_S3,running_correl_S3, type='l', ylim=c(0,0.8),xlab="", ylab="",axes=F, 
+     col="blue2", lwd=3)
+lab1 <- c("0", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8")
+axis(1, at=seq(1900, 2010, by=10),las=1 , tck = 0.02)
+axis(2, at=seq(0, 0.8, by=0.1),labels=lab1,las=1 , tck = 0.02,hadj=0.5, col="blue2",col.ticks="blue2", col.lab="blue2")
+mtext(side= 2, text = "30-yr running correlation
+      precipitation", line = 1.9,col="black")
+mtext(side= 1, text = "Year", line = 2.3)
+abline(h=0.3, col="black", lw=2, lty=3)
+legend(x=1930,y=0.7, "JJA-PCP", lty=1,lwd=3,col="blue2", bty = "n",text.col="blue2")
+# plot of running correlation of mean Ci and mean VPD
+par(new = T)
+plot(central_year_S4_vpd,running_correl_S4_vpd, type='l', ylim=c(0,-0.8),xlab="", ylab="",axes=F, 
+     col="cyan3", lwd=3)
+axis(4, at=seq(0,-0.8, by=-0.1),las=1 , tck = 0.02,hadj=0.5, col="cyan3")
+mtext(side= 4, text = "30-yr running correlation
+      VPD / PET", line =2.8, col="black")
+legend(x=1945,y=-0.7, c("JJA-VPD","JJA-PET"), lty=c(1,3),lwd=c(3,3),col=c("cyan3","dodgerblue3"), bty = "n", text.col=c("cyan3","dodgerblue3"), ncol=2)
+
+lines(central_year_S4_pet,running_correl_S4_pet,lwd=3,col="dodgerblue3", lty=3)
+
+# dev.off()
+
+
+
+
+
+
+
+
+          # FIGURE S4 ---------------------------------------------------------------
+png(filename = "photosynthesis.png",width = 6, height = 3,pointsize = 8,units = "in",res = 600)
+plot.ts((Ac_medlyn-Rd), ylim=c(2.5,6.5), col="gray48", ylab="Assimilation")
+lines((Aj_medlyn-Rd), col="blue3")
+# lines(A_medlyn,col="firebrick3", lty=3, lw=2)
+legend("topleft", c("Ac [Rubisco-limited]","Aj [RuBP-limited]"),ncol=1,
+       lty=c(1,1),lwd=c(1,1,2),col=c("gray48","blue3"),
+       bty = "n", text.col=c("gray48","blue3"), cex=1)
+dev.off()
